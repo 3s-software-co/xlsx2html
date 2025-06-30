@@ -4,6 +4,7 @@ import tempfile
 import pytest
 
 FIXTURES_ROOT = os.path.join(os.path.dirname(__file__), "fixtures")
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 
 @pytest.fixture()
@@ -19,6 +20,14 @@ def image_diff_reference_dir():
 @pytest.fixture(scope="session")
 def image_diff_threshold():
     return 0.05
+
+
+@pytest.fixture(scope="session")
+def image_diff_color_mode():
+    """
+    Normalize color mode. RGB, RGBA, None. Default None - do nothing
+    """
+    return "RGB"
 
 
 @pytest.fixture(scope="function")
@@ -38,18 +47,53 @@ def temp_file():
 
 
 @pytest.fixture(scope="session")
+def splinter_window_size():
+    return (1280, 1024)
+
+
+@pytest.fixture(scope="session")
+def splinter_headless(request):
+    """Flag to start the browser in headless mode."""
+    if request.config.option.splinter_headless:
+        return "old"
+    return False
+
+
+@pytest.fixture(scope="session")
 def splinter_webdriver(request):
     return request.config.option.splinter_webdriver or "chrome"
+
+
+@pytest.fixture(scope="session")
+def splinter_driver_kwargs(request, splinter_webdriver, splinter_window_size):
+    kw = {}
+    # TODO check for another browsers https://github.com/cobrateam/splinter/pull/1132/
+    if splinter_webdriver == "chrome":
+        executable = request.config.option.splinter_webdriver_executable
+        if not executable:
+            from chromedriver_binary import chromedriver_filename
+
+            executable = chromedriver_filename
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+
+        options = ChromeOptions()
+        options.add_argument(f"--window-size={'x'.join(map(str,splinter_window_size))}")
+        options.add_argument(f"--force-device-scale-factor=1")
+        kw["options"] = options
+        kw["service"] = Service(
+            executable_path=executable,
+        )
+    return kw
 
 
 @pytest.fixture(scope="session")
 def splinter_webdriver_executable(request, splinter_webdriver):
     """Webdriver executable directory."""
     executable = request.config.option.splinter_webdriver_executable
-    if not executable and splinter_webdriver == "chrome":
-        from chromedriver_binary import chromedriver_filename
-
-        executable = chromedriver_filename
+    if splinter_webdriver == "chrome":
+        # Workaround for never chromedriver
+        return None
     return os.path.abspath(executable) if executable else None
 
 

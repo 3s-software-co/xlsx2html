@@ -10,6 +10,7 @@ from openpyxl.drawing.image import Image
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker
 from openpyxl.styles.colors import COLOR_INDEX, aRGB_REGEX
 from openpyxl.utils import rows_from_range, column_index_from_string, units
+from openpyxl.utils.escape import unescape
 from openpyxl.worksheet.worksheet import Worksheet
 
 from xlsx2html.compat import OPENPYXL_24
@@ -97,6 +98,8 @@ def get_styles_from_cell(cell, merged_cell_map=None, default_cell_border="none")
 
     if cell.alignment.horizontal:
         h_styles["text-align"] = cell.alignment.horizontal
+    if cell.alignment.vertical:
+        h_styles["vertical-align"] = cell.alignment.vertical
 
     with contextlib.suppress(AttributeError):
         if cell.fill.patternType == "solid":
@@ -144,17 +147,14 @@ def image_to_data(image: Image) -> dict:
     return data
 
 
-def images_to_data(ws: Worksheet, custom_image_to_data=None):
+def images_to_data(ws: Worksheet):
     images: List[Image] = ws._images
 
     images_data = defaultdict(list)
     for _i in images:
         _id = image_to_data(_i)
-        if custom_image_to_data:
-            _id = custom_image_to_data(_i, _id)
         images_data[(_id["col"], _id["row"])].append(_id)
     return images_data
-
 
 def get_dimensions(ws: Worksheet) -> tuple:
     abc = [chr(i) for i in range(ord('a'), ord('z') + 1)]
@@ -195,10 +195,49 @@ def get_dimensions(ws: Worksheet) -> tuple:
         if len(column_aux) >= 2:
             max_col = column_aux[1]
 
+    # Siempre considerar imágenes para obtener las dimensiones reales
+
+    
+    if hasattr(ws, '_images') and ws._images:        
+        for i, image in enumerate(ws._images):        
+            img_row = None
+            img_col = None
+            
+            if hasattr(image, 'anchor'):
+                # Intentar con OneCellAnchor (_from.row, _from.col)
+                if hasattr(image.anchor, '_from') and hasattr(image.anchor._from, 'row'):
+                    img_row = image.anchor._from.row + 1
+                    img_col = image.anchor._from.col + 1
+                
+                # Fallback: intentar con absolute anchor (row, col)
+                elif hasattr(image.anchor, 'row') and hasattr(image.anchor, 'col'):
+                    img_row = image.anchor.row + 1
+                    img_col = image.anchor.col + 1
+                else:
+                    pass
+                
+                # Actualizar dimensiones si se encontró posición válida
+                if img_row is not None and img_col is not None:
+                    # Actualizar dimensiones mínimas
+                    if min_row is None or img_row < min_row:
+                        min_row = img_row
+                    if min_col is None or img_col < min_col:
+                        min_col = img_col
+                    
+                    # Para máximas, usar la posición + estimación de tamaño
+                    img_max_row = img_row + 5  # Estimación conservadora
+                    img_max_col = img_col + 5
+                    
+                    if max_row is None or img_max_row > max_row:
+                        max_row = img_max_row
+                    if max_col is None or img_max_col > max_col:
+                        max_col = img_max_col
+        
     return (min_row, max_row, min_col, max_col)
 
 
-def worksheet_to_data(ws, locale=None, fs=None, default_cell_border="none", custom_image_to_data=None):
+
+def worksheet_to_data(ws, locale=None, fs=None, default_cell_border="none"):
     merged_cell_map = {}
     if OPENPYXL_24:
         merged_cell_ranges = ws.merged_cell_ranges
@@ -215,7 +254,11 @@ def worksheet_to_data(ws, locale=None, fs=None, default_cell_border="none", cust
         )
 
     for cell_range in merged_cell_ranges:
-        cell_range_list = list(ws[cell_range])
+        if ":" not in str(cell_range):
+            cell_range_list = list(ws[f"{cell_range}:{cell_range}"])
+        else:
+            cell_range_list = list(ws[cell_range])
+
         m_cell = cell_range_list[0][0]
 
         colspan = len(cell_range_list[0])
@@ -254,15 +297,17 @@ def worksheet_to_data(ws, locale=None, fs=None, default_cell_border="none", cust
             f_cell = None
             if fs:
                 f_cell = fs[cell.coordinate]
-
+            value = cell.value
+            if isinstance(value, str):
+                value = unescape(value)
+            
             formatted_value = format_cell(cell, locale=locale, f_cell=f_cell)
             if isinstance(formatted_value, str):
                 formatted_value = '<br />'.join(formatted_value.split('\n'))
-
             cell_data = {
                 "column": cell.column,
                 "row": cell.row,
-                "value": cell.value,
+                "value": value,
                 "formatted_value": formatted_value,
                 "attrs": {"id": get_cell_id(cell)},
                 "style": {"height": f"{height}pt"},
@@ -307,13 +352,12 @@ def worksheet_to_data(ws, locale=None, fs=None, default_cell_border="none", cust
     for col in col_list:
         col['style']['width'] = '{:2f}%'.format(
             float(col['style']['width'][:-2]) / total_width * 100)
-
-    return {"rows": data_list, "cols": col_list, "images": images_to_data(ws, custom_image_to_data)}
+    return {"rows": data_list, "cols": col_list, "images": images_to_data(ws)}
 
 
 def render_table(data, append_headers, append_lineno):
     html = [
-        "<table "
+        "<table  "
         'style="border-collapse: collapse" '
         'border="0" '
         'cellspacing="0" '
@@ -371,27 +415,33 @@ def render_table(data, append_headers, append_lineno):
     return "\n".join(html)
 
 
-def render_data_to_html(data, append_headers, append_lineno, html_lang, document_title):
-    html = """
+HTML_TEMPLATE = """
     <!DOCTYPE html>
-    <html lang="%(html_lang)s">
-        <head>
-            <meta charset="UTF-8">
-            <title>%(document_title)s</title>
-        </head>
-        <body>
-            %(table)s
-        </body>
+    <html lang="{html_lang}">
+    <head>
+        <meta charset="UTF-8">
+        <title>{document_title}</title>
+    </head>
+    <body>
+        {table}
+    </body>
     </html>
     """
-    return html % {"html_lang": html_lang, "document_title": document_title, "table": render_table(data, append_headers, append_lineno)}
+
+
+def render_data_to_html(data, append_headers, append_lineno, html_lang="en", document_title="Title"):
+    return HTML_TEMPLATE.format(
+        html_lang=html_lang,
+        document_title=document_title,
+        table=render_table(data, append_headers, append_lineno)
+    )
 
 
 def get_sheet(wb, sheet):
     ws = wb.active
     if sheet is not None:
         try:
-            ws = wb.get_sheet_by_name(sheet)
+            ws = wb[sheet]
         except KeyError:
             ws = wb.worksheets[sheet]
     return ws
@@ -406,32 +456,57 @@ def xlsx2html(
     append_headers=(lambda dumb1, dumb2: True),
     append_lineno=(lambda dumb1, dumb2: True),
     default_cell_border="none",
-    custom_image_to_data=(lambda image, initial_data: initial_data),
-    document_title="Title",
-    html_lang="en"
+    html_lang="en",
+    document_title="Title"
 ):
+    """
+
+    :param filepath: the path to open or a file-like object
+    :type filepath: string or a file-like object open in binary mode c.f., :class:`zipfile.ZipFile`
+    :param output: the path to open or a file-like object
+    :param locale: string or a file-like object open in binary mode c.f., :class:`zipfile.ZipFile`
+    :param sheet: if `None` - first sheet; if `-1` - all sheets;
+        if string sheet name.
+        if number - sheet index. can also use list of names or indexes
+    :param parse_formula:
+    :param append_headers:
+    :param append_lineno:
+    :param default_cell_border:
+    :return:
+    """
     wb = openpyxl.load_workbook(filepath, data_only=True)
-    ws = get_sheet(wb, sheet)
-
-    fs = None
-    if parse_formula:
-        fb = openpyxl.load_workbook(filepath, data_only=False)
-        fs = get_sheet(fb, sheet)
-
-    data = worksheet_to_data(
-        ws,
-        locale=locale,
-        fs=fs,
-        default_cell_border=default_cell_border,
-        custom_image_to_data=custom_image_to_data
-    )
-    html = render_data_to_html(data, append_headers, append_lineno,
-                               html_lang=html_lang, document_title=document_title,)
+    sheet_list = [sheet]
+    if isinstance(sheet, (list, tuple)):
+        # TODO any iterable
+        sheet_list = sheet
+    elif sheet == -1:
+        sheet_list = wb.sheetnames
 
     if not output:
         output = io.StringIO()
     if isinstance(output, str):
-        output = open(output, "w")
+        output = open(output, "w", encoding="utf-8")
+    if output.encoding and output.encoding not in ["utf-8", "utf-16"]:
+        raise UnicodeError("output must be opened with encoding='utf-8'")
+
+    html_tables = []
+    for sheet in sheet_list:
+        ws = get_sheet(wb, sheet)
+        fs = None
+        if parse_formula:
+            fb = openpyxl.load_workbook(filepath, data_only=False)
+            fs = get_sheet(fb, sheet)
+
+        data = worksheet_to_data(
+            ws, locale=locale, fs=fs, default_cell_border=default_cell_border
+        )
+        html_tables.append(render_table(data, append_headers, append_lineno))
+
+    html = HTML_TEMPLATE.format(
+        html_lang=html_lang,
+        document_title=document_title,
+        table="\n".join(html_tables)
+    )
     output.write(html)
     output.flush()
     return output

@@ -11,31 +11,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.7, 3.8, 3.9, '3.10', '3.11']
+        python-version: [3.8, 3.9, '3.10', '3.11', '3.12', '3.13']
         toxenv: [""]
         experimental: [ false ]
         include:
           - toxenv: qa
-            python-version: 3.7
+            python-version: 3.9
             experimental: false
           - toxenv: type
-            python-version: 3.7
+            python-version: 3.9
             experimental: false
-          - toxenv: py37-openpyxl24
-            experimental: false
-            python-version: 3.7
           - experimental: true
-            python-version: "3.12.0-alpha.1 - 3.12"
+            python-version: "3.14.0-alpha.1 - 3.14"
           - experimental: true
-            python-version: "pypy-3.7"
+            python-version: "pypy-3.10"
 
 
     continue-on-error: ${{ matrix.experimental }}
     env:
       TOXENV: ${{ matrix.toxenv }}
+      CHROMEDRIVER_PACKAGE: "chromedriver-binary-auto"
     steps:
       # chrome headless
       - uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: 131
+
       - uses: actions/checkout@v2
       - name: Set up python ${{ matrix.python-version}}
         uses: actions/setup-python@v2
@@ -47,9 +48,44 @@ jobs:
           pip install tox python-coveralls codecov
       - name: Run tests
         run: tox
+      - name: Set locale
+        run: |
+          sudo apt-get update && sudo apt-get install tzdata locales -y
+          sudo localedef -f CP1251 -i /usr/share/i18n/locales/bg_BG /usr/lib/locale/bg_BG.CP1251
+          sudo echo 'bg_BG.CP1251 CP1251' | sudo tee -a /etc/locale.gen > /dev/null
+          sudo mkdir /usr/local/share/i18n
+          sudo touch /usr/local/share/i18n/SUPPORTED
+          sudo echo 'bg_BG.CP1251 CP1251' | sudo tee -a /usr/local/share/i18n/SUPPORTED > /dev/null
+          sudo locale-gen bg_BG.UTF-8
+          sudo locale-gen bg_BG
+          sudo locale-gen
+          sudo update-locale LANG=bg_BG.CP1251
+          locale -a
+          echo "Actual locale"
+          locale
+          echo "Actual numeric settings"
+          locale -c -k LC_NUMERIC
+          echo "LANG Variable"
+          echo "$LANG"
+          echo "LocaleCtl"
+          localectl status
+      - name: Run tests with another locale
+        run: LC_ALL=bg_BG.CP1251 tox
       - uses: codecov/codecov-action@v1
         with:
           env_vars: OS,PYTHON,TOXENV
+
+      - name: Test data
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: "test-data-${{ matrix.python-version }}-${{ matrix.toxenv }}-${{ github.run_number }}"
+          include-hidden-files: true
+          path: |
+            ${{ github.workspace }}/.tests/
+            ${{ github.workspace }}/tests/
+            ${{ github.workspace }}/tests.*/
+
 
   publish:
     name: Build and publish Python distributions to PyPI and TestPyPI
@@ -58,10 +94,10 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@master
-      - name: Set up Python 3.7
+      - name: Set up Python 3.11
         uses: actions/setup-python@v1
         with:
-          python-version: 3.7
+          python-version: 3.11
       - name: Install pypa/build
         run: >-
           python -m
