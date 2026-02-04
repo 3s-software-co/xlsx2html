@@ -21,5 +21,6 @@ pytest-image-diff>=0.0.14
 recommonmark
 Sphinx
 alabaster
+babel==2.9.1 # Fijar versión por conflicto con versión actual de Sphinx
 # QA
 pre-commit==2.13.0
